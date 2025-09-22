@@ -16,6 +16,7 @@ package controllers
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -83,7 +84,11 @@ func (f *FlatpakController) IndexDynamic() {
 // handleIndexRequest processes both static and dynamic index requests
 func (f *FlatpakController) handleIndexRequest(isStatic bool) {
 	// Parse query parameters
-	filters := f.parseQueryFilters()
+	filters, err := f.parseQueryFilters()
+	if err != nil {
+		f.CustomAbort(http.StatusBadRequest, err.Error())
+		return
+	}
 
 	// Get registry URL from request
 	registryURL := f.getRegistryURL()
@@ -106,6 +111,7 @@ func (f *FlatpakController) handleIndexRequest(isStatic bool) {
 	}
 
 	f.Ctx.Output.Header("Content-Type", "application/json")
+	f.Ctx.Output.Header("Content-Encoding", "gzip")
 	f.Data["json"] = response
 
 	if err := f.ServeJSON(); err != nil {
@@ -125,7 +131,7 @@ type QueryFilters struct {
 }
 
 // parseQueryFilters extracts and parses query parameters according to the Flatpak OCI spec
-func (f *FlatpakController) parseQueryFilters() QueryFilters {
+func (f *FlatpakController) parseQueryFilters() (QueryFilters, error) {
 	filters := QueryFilters{
 		Annotations: make(map[string][]string),
 		Labels:      make(map[string][]string),
@@ -148,15 +154,15 @@ func (f *FlatpakController) parseQueryFilters() QueryFilters {
 	// Parse annotation and label parameters
 	for key, values := range f.Ctx.Request.URL.Query() {
 		if strings.HasPrefix(key, "annotation:") {
-			annotationKey := strings.TrimPrefix(key, "annotation:")
-			filters.Annotations[annotationKey] = values
+			// Following Pulp's approach: annotations are not supported
+			return filters, fmt.Errorf("annotation queries are not supported")
 		} else if strings.HasPrefix(key, "label:") {
 			labelKey := strings.TrimPrefix(key, "label:")
 			filters.Labels[labelKey] = values
 		}
 	}
 
-	return filters
+	return filters, nil
 }
 
 // getRegistryURL constructs the registry URL from the request
