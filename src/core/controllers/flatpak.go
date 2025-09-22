@@ -199,7 +199,8 @@ func (f *FlatpakController) queryRepositories(filters QueryFilters) []FlatpakInd
 						"org.flatpak.ref": "app/org.example.App/x86_64/stable",
 					},
 					Labels: map[string]string{
-						"maintainer": "example@example.com",
+						"maintainer":        "example@example.com",
+						"org.flatpak.ref":   "app/org.example.App/x86_64/stable",
 					},
 				},
 			},
