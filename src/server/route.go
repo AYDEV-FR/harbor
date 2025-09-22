@@ -45,6 +45,10 @@ func registerRoutes() {
 	web.Router(common.OIDCCallbackPath, &controllers.OIDCController{}, "get:Callback")
 	web.Router(common.AuthProxyRedirectPath, &controllers.AuthProxyController{}, "get:HandleRedirect")
 
+	// OCI Flatpak specification endpoints
+	web.Router("/index/static", &controllers.FlatpakController{}, "get:IndexStatic")
+	web.Router("/index/dynamic", &controllers.FlatpakController{}, "get:IndexDynamic")
+
 	web.Router("/api/internal/renameadmin", &api.InternalAPI{}, "post:RenameAdmin")
 	web.Router("/api/internal/syncquota", &api.InternalAPI{}, "post:SyncQuota")
 
