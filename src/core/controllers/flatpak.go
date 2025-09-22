@@ -170,7 +170,7 @@ func (f *FlatpakController) getRegistryURL() string {
 		}
 	}
 
-	return scheme + "://" + host
+	return scheme + "://" + host + "/v2"
 }
 
 // queryRepositories performs the actual repository query based on filters
@@ -184,23 +184,57 @@ func (f *FlatpakController) queryRepositories(filters QueryFilters) []FlatpakInd
 
 	log.Infof("Querying repositories with filters: %+v", filters)
 
-	// Mock response for demonstration
+	// Check if request is looking for org.flatpak.ref labels
+	hasFlatpakLabel := false
+	if labelValues, exists := filters.Labels["org.flatpak.ref:exists"]; exists {
+		for _, value := range labelValues {
+			if value == "1" {
+				hasFlatpakLabel = true
+				break
+			}
+		}
+	}
+
+	// Only return results if looking for Flatpak apps
+	if !hasFlatpakLabel {
+		return []FlatpakIndexResult{}
+	}
+
+	// Get requested architecture (default to amd64 if not specified)
+	arch := "amd64"
+	if len(filters.Architecture) > 0 {
+		arch = filters.Architecture[0]
+	}
+
+	// Get requested OS (default to linux if not specified)
+	os := "linux"
+	if len(filters.OS) > 0 {
+		os = filters.OS[0]
+	}
+
+	// Build flatpak ref based on architecture
+	flatpakArch := arch
+	if arch == "arm64" {
+		flatpakArch = "aarch64"
+	}
+
+	// Mock response matching the requested filters
 	results := []FlatpakIndexResult{
 		{
 			Name: "example-repo",
 			Images: []FlatpakImageInfo{
 				{
-					Tags:         []string{"latest", "v1.0.0"},
-					Digest:       "sha256:example1234567890abcdef",
+					Tags:         []string{"latest"},
+					Digest:       "sha256:b5b2b2c507200e6867905e02c1c9c08a1b6b5c7c2d6a8",
 					MediaType:    "application/vnd.oci.image.manifest.v1+json",
-					OS:           "linux",
-					Architecture: "amd64",
+					OS:           os,
+					Architecture: arch,
 					Annotations: map[string]string{
-						"org.flatpak.ref": "app/org.example.App/x86_64/stable",
+						"org.flatpak.ref": "app/org.example.App/" + flatpakArch + "/stable",
 					},
 					Labels: map[string]string{
-						"maintainer":        "example@example.com",
-						"org.flatpak.ref":   "app/org.example.App/x86_64/stable",
+						"maintainer":      "example@example.com",
+						"org.flatpak.ref": "app/org.example.App/" + flatpakArch + "/stable",
 					},
 				},
 			},
