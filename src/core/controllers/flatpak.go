@@ -15,11 +15,15 @@
 package controllers
 
 import (
+	"context"
 	"net/http"
 	"strings"
 
+	"github.com/goharbor/harbor/src/controller/artifact"
+	"github.com/goharbor/harbor/src/controller/repository"
 	"github.com/goharbor/harbor/src/core/api"
 	"github.com/goharbor/harbor/src/lib/log"
+	"github.com/goharbor/harbor/src/lib/q"
 )
 
 // FlatpakController handles OCI Flatpak specification endpoints
@@ -175,13 +179,6 @@ func (f *FlatpakController) getRegistryURL() string {
 
 // queryRepositories performs the actual repository query based on filters
 func (f *FlatpakController) queryRepositories(filters QueryFilters) []FlatpakIndexResult {
-	// TODO: Implement actual repository querying logic
-	// This is a placeholder implementation that returns mock data
-	// In a real implementation, this would:
-	// 1. Query the Harbor registry database/API
-	// 2. Apply the provided filters
-	// 3. Return matching repositories with their images and manifests
-
 	log.Infof("Querying repositories with filters: %+v", filters)
 
 	// Check if request is looking for org.flatpak.ref labels
@@ -200,47 +197,226 @@ func (f *FlatpakController) queryRepositories(filters QueryFilters) []FlatpakInd
 		return []FlatpakIndexResult{}
 	}
 
-	// Get requested architecture (default to amd64 if not specified)
-	arch := "amd64"
-	if len(filters.Architecture) > 0 {
-		arch = filters.Architecture[0]
+	ctx := context.Background()
+	var results []FlatpakIndexResult
+
+	// Query repositories from Harbor
+	repoQuery := &q.Query{}
+	if len(filters.Repository) > 0 {
+		// Filter by repository names if specified
+		repoQuery.Keywords = map[string]interface{}{
+			"name": &q.FuzzyMatchValue{Value: strings.Join(filters.Repository, "|")},
+		}
 	}
 
-	// Get requested OS (default to linux if not specified)
-	os := "linux"
-	if len(filters.OS) > 0 {
-		os = filters.OS[0]
+	repositories, err := repository.Ctl.List(ctx, repoQuery)
+	if err != nil {
+		log.Errorf("Failed to query repositories: %v", err)
+		return results
 	}
 
-	// Build flatpak ref based on architecture
-	flatpakArch := arch
-	if arch == "arm64" {
-		flatpakArch = "aarch64"
-	}
-
-	// Mock response matching the requested filters
-	results := []FlatpakIndexResult{
-		{
-			Name: "example-repo",
-			Images: []FlatpakImageInfo{
-				{
-					Tags:         []string{"latest"},
-					Digest:       "sha256:b5b2b2c507200e6867905e02c1c9c08a1b6b5c7c2d6a8",
-					MediaType:    "application/vnd.oci.image.manifest.v1+json",
-					OS:           os,
-					Architecture: arch,
-					Annotations: map[string]string{
-						"org.flatpak.ref": "app/org.example.App/" + flatpakArch + "/stable",
-					},
-					Labels: map[string]string{
-						"maintainer":      "example@example.com",
-						"org.flatpak.ref": "app/org.example.App/" + flatpakArch + "/stable",
-					},
-				},
+	// For each repository, query artifacts
+	for _, repo := range repositories {
+		artifactQuery := &q.Query{
+			Keywords: map[string]interface{}{
+				"repository_id": repo.RepositoryID,
 			},
-			Lists: []FlatpakListInfo{},
-		},
+		}
+
+		// Apply tag filter if specified
+		if len(filters.Tag) > 0 {
+			artifactQuery.Keywords["tags"] = &q.FuzzyMatchValue{Value: strings.Join(filters.Tag, "|")}
+		}
+
+		artifacts, err := artifact.Ctl.List(ctx, artifactQuery, &artifact.Option{
+			WithTag:   true,
+			WithLabel: true,
+		})
+		if err != nil {
+			log.Errorf("Failed to query artifacts for repository %s: %v", repo.Name, err)
+			continue
+		}
+
+		var images []FlatpakImageInfo
+		var lists []FlatpakListInfo
+
+		for _, art := range artifacts {
+			// Check if artifact has Flatpak labels
+			if !f.hasFlatpakLabels(art, filters) {
+				continue
+			}
+
+			// Check OS/Architecture filters
+			if !f.matchesOSArch(art, filters) {
+				continue
+			}
+
+			// Extract tags
+			var tags []string
+			for _, tag := range art.Tags {
+				tags = append(tags, tag.Name)
+			}
+
+			// Build image info
+			imageInfo := FlatpakImageInfo{
+				Tags:         tags,
+				Digest:       art.Digest,
+				MediaType:    art.MediaType,
+				OS:           f.extractOS(art),
+				Architecture: f.extractArchitecture(art),
+				Annotations:  f.extractAnnotations(art),
+				Labels:       f.extractLabels(art),
+			}
+
+			// Determine if it's a manifest list or single image
+			if f.isManifestList(art) {
+				lists = append(lists, FlatpakListInfo{
+					Tags:      tags,
+					Digest:    art.Digest,
+					MediaType: art.MediaType,
+					Labels:    f.extractLabels(art),
+				})
+			} else {
+				images = append(images, imageInfo)
+			}
+		}
+
+		// Only include repositories that have matching artifacts
+		if len(images) > 0 || len(lists) > 0 {
+			results = append(results, FlatpakIndexResult{
+				Name:   repo.Name,
+				Images: images,
+				Lists:  lists,
+			})
+		}
 	}
 
 	return results
+}
+
+// hasFlatpakLabels checks if the artifact has the required Flatpak labels
+func (f *FlatpakController) hasFlatpakLabels(art *artifact.Artifact, filters QueryFilters) bool {
+	// Check for org.flatpak.ref label or annotation
+	for _, label := range art.Labels {
+		if label.Name == "org.flatpak.ref" {
+			return true
+		}
+	}
+
+	// Also check in annotations if available
+	if art.ExtraAttrs != nil {
+		if annotations, ok := art.ExtraAttrs["annotations"].(map[string]interface{}); ok {
+			if _, exists := annotations["org.flatpak.ref"]; exists {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// matchesOSArch checks if the artifact matches the requested OS/Architecture filters
+func (f *FlatpakController) matchesOSArch(art *artifact.Artifact, filters QueryFilters) bool {
+	artOS := f.extractOS(art)
+	artArch := f.extractArchitecture(art)
+
+	// Check OS filter
+	if len(filters.OS) > 0 {
+		found := false
+		for _, filterOS := range filters.OS {
+			if artOS == filterOS {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+
+	// Check Architecture filter
+	if len(filters.Architecture) > 0 {
+		found := false
+		for _, filterArch := range filters.Architecture {
+			if artArch == filterArch {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+
+	return true
+}
+
+// extractOS extracts the OS from artifact metadata
+func (f *FlatpakController) extractOS(art *artifact.Artifact) string {
+	if art.ExtraAttrs != nil {
+		if config, ok := art.ExtraAttrs["config"].(map[string]interface{}); ok {
+			if os, exists := config["os"].(string); exists {
+				return os
+			}
+		}
+	}
+	return "linux" // default
+}
+
+// extractArchitecture extracts the architecture from artifact metadata
+func (f *FlatpakController) extractArchitecture(art *artifact.Artifact) string {
+	if art.ExtraAttrs != nil {
+		if config, ok := art.ExtraAttrs["config"].(map[string]interface{}); ok {
+			if arch, exists := config["architecture"].(string); exists {
+				return arch
+			}
+		}
+	}
+	return "amd64" // default
+}
+
+// extractAnnotations extracts annotations from artifact metadata
+func (f *FlatpakController) extractAnnotations(art *artifact.Artifact) map[string]string {
+	annotations := make(map[string]string)
+	if art.ExtraAttrs != nil {
+		if annots, ok := art.ExtraAttrs["annotations"].(map[string]interface{}); ok {
+			for key, value := range annots {
+				if strValue, ok := value.(string); ok {
+					annotations[key] = strValue
+				}
+			}
+		}
+	}
+	return annotations
+}
+
+// extractLabels extracts labels from artifact Harbor labels and metadata
+func (f *FlatpakController) extractLabels(art *artifact.Artifact) map[string]string {
+	labels := make(map[string]string)
+
+	// Add Harbor labels
+	for _, label := range art.Labels {
+		labels[label.Name] = label.Value
+	}
+
+	// Also check for OCI labels in config
+	if art.ExtraAttrs != nil {
+		if config, ok := art.ExtraAttrs["config"].(map[string]interface{}); ok {
+			if ociLabels, exists := config["labels"].(map[string]interface{}); exists {
+				for key, value := range ociLabels {
+					if strValue, ok := value.(string); ok {
+						labels[key] = strValue
+					}
+				}
+			}
+		}
+	}
+
+	return labels
+}
+
+// isManifestList determines if the artifact is a manifest list
+func (f *FlatpakController) isManifestList(art *artifact.Artifact) bool {
+	return art.MediaType == "application/vnd.oci.image.index.v1+json" ||
+		art.MediaType == "application/vnd.docker.distribution.manifest.list.v2+json"
 }
