@@ -15,7 +15,6 @@
 package controllers
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -215,7 +214,7 @@ func (f *FlatpakController) queryRepositories(filters QueryFilters) []FlatpakInd
 
 	log.Infof("Flatpak label filter detected, proceeding with repository query")
 
-	ctx := context.Background()
+	ctx := f.Ctx.Request.Context()
 	var results []FlatpakIndexResult
 
 	// Query repositories from Harbor
