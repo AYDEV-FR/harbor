@@ -317,7 +317,7 @@ func (f *FlatpakController) queryRepositories(filters QueryFilters) []FlatpakInd
 
 // hasFlatpakLabels checks if the artifact has the required Flatpak labels
 func (f *FlatpakController) hasFlatpakLabels(art *artifact.Artifact, filters QueryFilters) bool {
-	log.Infof("Checking artifact %s for Flatpak labels, has %d labels", art.Digest, len(art.Labels))
+	log.Infof("Checking artifact %s for Flatpak labels, has %d labels, %d references", art.Digest, len(art.Labels), len(art.References))
 
 	// Check for org.flatpak.ref in Harbor labels
 	for _, label := range art.Labels {
@@ -343,6 +343,45 @@ func (f *FlatpakController) hasFlatpakLabels(art *artifact.Artifact, filters Que
 		}
 	}
 
+	// Check references (architecture-specific manifests) for Flatpak labels
+	ctx := f.Ctx.Request.Context()
+	for _, ref := range art.References {
+		log.Infof("Checking reference artifact %d for Flatpak labels", ref.ChildID)
+
+		// Get the referenced artifact with full metadata
+		refArt, err := artifact.Ctl.Get(ctx, ref.ChildID, &artifact.Option{
+			WithLabel: true,
+		})
+		if err != nil {
+			log.Errorf("Failed to get referenced artifact %d: %v", ref.ChildID, err)
+			continue
+		}
+
+		// Check Harbor labels in referenced artifact
+		for _, label := range refArt.Labels {
+			log.Infof("Reference artifact Harbor label: name=%s", label.Name)
+			if label.Name == "org.flatpak.ref" {
+				log.Infof("Found org.flatpak.ref in referenced artifact %d", ref.ChildID)
+				return true
+			}
+		}
+
+		// Check OCI labels in referenced artifact
+		if refArt.ExtraAttrs != nil {
+			if config, ok := refArt.ExtraAttrs["config"].(map[string]interface{}); ok {
+				if ociLabels, exists := config["labels"].(map[string]interface{}); exists {
+					for key := range ociLabels {
+						log.Infof("Reference artifact OCI label: key=%s", key)
+						if key == "org.flatpak.ref" {
+							log.Infof("Found org.flatpak.ref in referenced artifact %d OCI labels", ref.ChildID)
+							return true
+						}
+					}
+				}
+			}
+		}
+	}
+
 	// Also check in annotations if available
 	if art.ExtraAttrs != nil {
 		if annotations, ok := art.ExtraAttrs["annotations"].(map[string]interface{}); ok {
@@ -353,7 +392,7 @@ func (f *FlatpakController) hasFlatpakLabels(art *artifact.Artifact, filters Que
 		}
 	}
 
-	log.Infof("No org.flatpak.ref label/annotation found in artifact %s", art.Digest)
+	log.Infof("No org.flatpak.ref label/annotation found in artifact %s or its references", art.Digest)
 	return false
 }
 
