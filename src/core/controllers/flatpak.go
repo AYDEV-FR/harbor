@@ -320,12 +320,27 @@ func (f *FlatpakController) queryRepositories(filters QueryFilters) []FlatpakInd
 func (f *FlatpakController) hasFlatpakLabels(art *artifact.Artifact, filters QueryFilters) bool {
 	log.Infof("Checking artifact %s for Flatpak labels, has %d labels", art.Digest, len(art.Labels))
 
-	// Check for org.flatpak.ref label or annotation
+	// Check for org.flatpak.ref in Harbor labels
 	for _, label := range art.Labels {
-		log.Infof("Artifact label: name=%s", label.Name)
+		log.Infof("Artifact Harbor label: name=%s", label.Name)
 		if label.Name == "org.flatpak.ref" {
-			log.Infof("Found org.flatpak.ref label in artifact %s", art.Digest)
+			log.Infof("Found org.flatpak.ref in Harbor labels for artifact %s", art.Digest)
 			return true
+		}
+	}
+
+	// Check for org.flatpak.ref in OCI image labels (main location for Flatpak metadata)
+	if art.ExtraAttrs != nil {
+		if config, ok := art.ExtraAttrs["config"].(map[string]interface{}); ok {
+			if ociLabels, exists := config["labels"].(map[string]interface{}); exists {
+				for key := range ociLabels {
+					log.Infof("Artifact OCI label: key=%s", key)
+					if key == "org.flatpak.ref" {
+						log.Infof("Found org.flatpak.ref in OCI labels for artifact %s", art.Digest)
+						return true
+					}
+				}
+			}
 		}
 	}
 
