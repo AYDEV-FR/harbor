@@ -34,7 +34,7 @@ type FlatpakController struct {
 
 // FlatpakIndexResponse represents the response structure for Flatpak index endpoints
 type FlatpakIndexResponse struct {
-	Registry string                `json:"Registry"`
+	Registry string               `json:"Registry"`
 	Results  []FlatpakIndexResult `json:"Results"`
 }
 
