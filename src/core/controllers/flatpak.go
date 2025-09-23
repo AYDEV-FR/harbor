@@ -248,8 +248,9 @@ func (f *FlatpakController) queryRepositories(filters QueryFilters) []FlatpakInd
 		}
 
 		artifacts, err := artifact.Ctl.List(ctx, artifactQuery, &artifact.Option{
-			WithTag:   true,
-			WithLabel: true,
+			WithTag:       true,
+			WithLabel:     true,
+			WithAccessory: true,
 		})
 		if err != nil {
 			log.Errorf("Failed to query artifacts for repository %s: %v", repo.Name, err)
@@ -318,6 +319,8 @@ func (f *FlatpakController) queryRepositories(filters QueryFilters) []FlatpakInd
 // hasFlatpakLabels checks if the artifact has the required Flatpak labels
 func (f *FlatpakController) hasFlatpakLabels(art *artifact.Artifact, filters QueryFilters) bool {
 	log.Infof("Checking artifact %s for Flatpak labels, has %d labels, %d references", art.Digest, len(art.Labels), len(art.References))
+	log.Infof("Artifact type: %s, media type: %s, manifest media type: %s", art.Type, art.MediaType, art.ManifestMediaType)
+	log.Infof("IsImageIndex: %t", art.IsImageIndex())
 
 	// Check for org.flatpak.ref in Harbor labels
 	for _, label := range art.Labels {
@@ -345,39 +348,48 @@ func (f *FlatpakController) hasFlatpakLabels(art *artifact.Artifact, filters Que
 
 	// Check references (architecture-specific manifests) for Flatpak labels
 	ctx := f.Ctx.Request.Context()
+
+	// First, check existing References if populated
 	for _, ref := range art.References {
 		log.Infof("Checking reference artifact %d for Flatpak labels", ref.ChildID)
 
 		// Get the referenced artifact with full metadata
 		refArt, err := artifact.Ctl.Get(ctx, ref.ChildID, &artifact.Option{
-			WithLabel: true,
+			WithLabel:     true,
+			WithAccessory: true,
 		})
 		if err != nil {
 			log.Errorf("Failed to get referenced artifact %d: %v", ref.ChildID, err)
 			continue
 		}
 
-		// Check Harbor labels in referenced artifact
-		for _, label := range refArt.Labels {
-			log.Infof("Reference artifact Harbor label: name=%s", label.Name)
-			if label.Name == "org.flatpak.ref" {
-				log.Infof("Found org.flatpak.ref in referenced artifact %d", ref.ChildID)
-				return true
-			}
+		if f.checkArtifactForFlatpakLabels(refArt, fmt.Sprintf("reference artifact %d", ref.ChildID)) {
+			return true
 		}
+	}
 
-		// Check OCI labels in referenced artifact
-		if refArt.ExtraAttrs != nil {
-			if config, ok := refArt.ExtraAttrs["config"].(map[string]interface{}); ok {
-				if ociLabels, exists := config["labels"].(map[string]interface{}); exists {
-					for key := range ociLabels {
-						log.Infof("Reference artifact OCI label: key=%s", key)
-						if key == "org.flatpak.ref" {
-							log.Infof("Found org.flatpak.ref in referenced artifact %d OCI labels", ref.ChildID)
-							return true
-						}
-					}
-				}
+	// If no References found, manually query for child manifests
+	// This handles cases where IsImageIndex() might be false but child manifests exist
+	log.Infof("Manually querying for child manifests of artifact %s", art.Digest)
+
+	childQuery := &q.Query{
+		Keywords: map[string]interface{}{
+			"ParentID": art.ID,
+		},
+	}
+
+	childArtifacts, err := artifact.Ctl.List(ctx, childQuery, &artifact.Option{
+		WithLabel:     true,
+		WithAccessory: true,
+	})
+	if err != nil {
+		log.Errorf("Failed to query child artifacts for %s: %v", art.Digest, err)
+	} else {
+		log.Infof("Found %d child artifacts for %s", len(childArtifacts), art.Digest)
+		for _, childArt := range childArtifacts {
+			log.Infof("Checking child artifact %s (ID: %d) for Flatpak labels", childArt.Digest, childArt.ID)
+			if f.checkArtifactForFlatpakLabels(childArt, fmt.Sprintf("child artifact %s", childArt.Digest)) {
+				return true
 			}
 		}
 	}
@@ -393,6 +405,46 @@ func (f *FlatpakController) hasFlatpakLabels(art *artifact.Artifact, filters Que
 	}
 
 	log.Infof("No org.flatpak.ref label/annotation found in artifact %s or its references", art.Digest)
+	return false
+}
+
+// checkArtifactForFlatpakLabels checks a single artifact for Flatpak labels in both Harbor and OCI labels
+func (f *FlatpakController) checkArtifactForFlatpakLabels(art *artifact.Artifact, description string) bool {
+	log.Infof("Checking %s (digest: %s) for Flatpak labels, has %d Harbor labels", description, art.Digest, len(art.Labels))
+	log.Infof("%s type: %s, media type: %s, manifest media type: %s", description, art.Type, art.MediaType, art.ManifestMediaType)
+
+	// Check Harbor labels
+	for _, label := range art.Labels {
+		log.Infof("%s Harbor label: name=%s", description, label.Name)
+		if label.Name == "org.flatpak.ref" {
+			log.Infof("Found org.flatpak.ref in Harbor labels for %s", description)
+			return true
+		}
+	}
+
+	// Check OCI labels in config
+	if art.ExtraAttrs != nil {
+		if config, ok := art.ExtraAttrs["config"].(map[string]interface{}); ok {
+			if ociLabels, exists := config["labels"].(map[string]interface{}); exists {
+				log.Infof("%s has %d OCI labels", description, len(ociLabels))
+				for key := range ociLabels {
+					log.Infof("%s OCI label: key=%s", description, key)
+					if key == "org.flatpak.ref" {
+						log.Infof("Found org.flatpak.ref in OCI labels for %s", description)
+						return true
+					}
+				}
+			} else {
+				log.Infof("%s has config but no OCI labels", description)
+			}
+		} else {
+			log.Infof("%s has ExtraAttrs but no config", description)
+		}
+	} else {
+		log.Infof("%s has no ExtraAttrs", description)
+	}
+
+	log.Infof("No org.flatpak.ref label found in %s", description)
 	return false
 }
 
