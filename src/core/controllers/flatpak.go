@@ -137,6 +137,9 @@ func (f *FlatpakController) parseQueryFilters() (QueryFilters, error) {
 		Labels:      make(map[string][]string),
 	}
 
+	// Debug: log all query parameters
+	log.Infof("Flatpak query parameters: %+v", f.Ctx.Request.URL.Query())
+
 	// Parse standard parameters
 	if repos := f.GetStrings("repository"); len(repos) > 0 {
 		filters.Repository = repos
@@ -158,9 +161,12 @@ func (f *FlatpakController) parseQueryFilters() (QueryFilters, error) {
 			return filters, fmt.Errorf("annotation queries are not supported")
 		} else if strings.HasPrefix(key, "label:") {
 			labelKey := strings.TrimPrefix(key, "label:")
+			log.Infof("Flatpak label filter found: key=%s, values=%v", labelKey, values)
 			filters.Labels[labelKey] = values
 		}
 	}
+
+	log.Infof("Flatpak parsed filters: %+v", filters)
 
 	return filters, nil
 }
@@ -190,18 +196,24 @@ func (f *FlatpakController) queryRepositories(filters QueryFilters) []FlatpakInd
 	// Check if request is looking for org.flatpak.ref labels
 	hasFlatpakLabel := false
 	if labelValues, exists := filters.Labels["org.flatpak.ref:exists"]; exists {
+		log.Infof("Flatpak label 'org.flatpak.ref:exists' found with values: %v", labelValues)
 		for _, value := range labelValues {
 			if value == "1" {
 				hasFlatpakLabel = true
 				break
 			}
 		}
+	} else {
+		log.Infof("Flatpak label 'org.flatpak.ref:exists' not found in filters")
 	}
 
 	// Only return results if looking for Flatpak apps
 	if !hasFlatpakLabel {
+		log.Infof("No Flatpak label filter found, returning empty results")
 		return []FlatpakIndexResult{}
 	}
+
+	log.Infof("Flatpak label filter detected, proceeding with repository query")
 
 	ctx := context.Background()
 	var results []FlatpakIndexResult
@@ -220,6 +232,8 @@ func (f *FlatpakController) queryRepositories(filters QueryFilters) []FlatpakInd
 		log.Errorf("Failed to query repositories: %v", err)
 		return results
 	}
+
+	log.Infof("Found %d repositories to check", len(repositories))
 
 	// For each repository, query artifacts
 	for _, repo := range repositories {
@@ -242,6 +256,8 @@ func (f *FlatpakController) queryRepositories(filters QueryFilters) []FlatpakInd
 			log.Errorf("Failed to query artifacts for repository %s: %v", repo.Name, err)
 			continue
 		}
+
+		log.Infof("Found %d artifacts in repository %s", len(artifacts), repo.Name)
 
 		var images []FlatpakImageInfo
 		var lists []FlatpakListInfo
@@ -302,9 +318,13 @@ func (f *FlatpakController) queryRepositories(filters QueryFilters) []FlatpakInd
 
 // hasFlatpakLabels checks if the artifact has the required Flatpak labels
 func (f *FlatpakController) hasFlatpakLabels(art *artifact.Artifact, filters QueryFilters) bool {
+	log.Infof("Checking artifact %s for Flatpak labels, has %d labels", art.Digest, len(art.Labels))
+
 	// Check for org.flatpak.ref label or annotation
 	for _, label := range art.Labels {
+		log.Infof("Artifact label: name=%s", label.Name)
 		if label.Name == "org.flatpak.ref" {
+			log.Infof("Found org.flatpak.ref label in artifact %s", art.Digest)
 			return true
 		}
 	}
@@ -313,11 +333,13 @@ func (f *FlatpakController) hasFlatpakLabels(art *artifact.Artifact, filters Que
 	if art.ExtraAttrs != nil {
 		if annotations, ok := art.ExtraAttrs["annotations"].(map[string]interface{}); ok {
 			if _, exists := annotations["org.flatpak.ref"]; exists {
+				log.Infof("Found org.flatpak.ref annotation in artifact %s", art.Digest)
 				return true
 			}
 		}
 	}
 
+	log.Infof("No org.flatpak.ref label/annotation found in artifact %s", art.Digest)
 	return false
 }
 
