@@ -180,7 +180,7 @@ func (f *FlatpakController) getRegistryURL() string {
 		}
 	}
 
-	return scheme + "://" + host + "/v2"
+	return scheme + "://" + host
 }
 
 // queryRepositories performs the actual repository query based on filters
@@ -400,9 +400,9 @@ func (f *FlatpakController) extractAnnotations(art *artifact.Artifact) map[strin
 func (f *FlatpakController) extractLabels(art *artifact.Artifact) map[string]string {
 	labels := make(map[string]string)
 
-	// Add Harbor labels
+	// Add Harbor labels (use Name as both key and indicate presence)
 	for _, label := range art.Labels {
-		labels[label.Name] = label.Value
+		labels[label.Name] = "true"
 	}
 
 	// Also check for OCI labels in config
