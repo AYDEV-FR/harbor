@@ -346,10 +346,10 @@ func (f *FlatpakController) hasFlatpakLabels(art *artifact.Artifact, filters Que
 					}
 				}
 			}
-		} else if imageConfig, ok := art.ExtraAttrs["config"].(v1.ImageConfig); ok {
-			// Handle v1.ImageConfig structure directly
-			if imageConfig.Labels != nil {
-				for key := range imageConfig.Labels {
+		} else if configMap, ok := art.ExtraAttrs["config"].(map[string]interface{}); ok {
+			// Handle stored v1.ImageConfig as map (with capital Labels field)
+			if labels, exists := configMap["Labels"].(map[string]string); exists {
+				for key := range labels {
 					log.Infof("Artifact OCI label: key=%s", key)
 					if key == "org.flatpak.ref" {
 						log.Infof("Found org.flatpak.ref in OCI labels for artifact %s", art.Digest)
@@ -452,11 +452,11 @@ func (f *FlatpakController) checkArtifactForFlatpakLabels(art *artifact.Artifact
 			} else {
 				log.Infof("%s has config but no OCI labels (map format)", description)
 			}
-		} else if imageConfig, ok := art.ExtraAttrs["config"].(v1.ImageConfig); ok {
-			// Handle v1.ImageConfig structure directly
-			if imageConfig.Labels != nil && len(imageConfig.Labels) > 0 {
-				log.Infof("%s has %d OCI labels (ImageConfig format)", description, len(imageConfig.Labels))
-				for key := range imageConfig.Labels {
+		} else if configMap, ok := art.ExtraAttrs["config"].(map[string]interface{}); ok {
+			// Handle stored v1.ImageConfig as map (with capital Labels field)
+			if labels, exists := configMap["Labels"].(map[string]string); exists && len(labels) > 0 {
+				log.Infof("%s has %d OCI labels (Config.Labels format)", description, len(labels))
+				for key := range labels {
 					log.Infof("%s OCI label: key=%s", description, key)
 					if key == "org.flatpak.ref" {
 						log.Infof("Found org.flatpak.ref in OCI labels for %s", description)
@@ -464,7 +464,7 @@ func (f *FlatpakController) checkArtifactForFlatpakLabels(art *artifact.Artifact
 					}
 				}
 			} else {
-				log.Infof("%s has ImageConfig but no labels", description)
+				log.Infof("%s has config map but no Labels field", description)
 			}
 		} else {
 			log.Infof("%s has ExtraAttrs but no recognizable config format", description)
@@ -568,10 +568,10 @@ func (f *FlatpakController) extractLabels(art *artifact.Artifact) map[string]str
 					}
 				}
 			}
-		} else if imageConfig, ok := art.ExtraAttrs["config"].(v1.ImageConfig); ok {
-			// Handle v1.ImageConfig structure directly
-			if imageConfig.Labels != nil {
-				for key, value := range imageConfig.Labels {
+		} else if configMap, ok := art.ExtraAttrs["config"].(map[string]interface{}); ok {
+			// Handle stored v1.ImageConfig as map (with capital Labels field)
+			if ociLabels, exists := configMap["Labels"].(map[string]string); exists {
+				for key, value := range ociLabels {
 					labels[key] = value
 				}
 			}
