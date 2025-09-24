@@ -19,8 +19,6 @@ import (
 	"net/http"
 	"strings"
 
-	v1 "github.com/opencontainers/image-spec/specs-go/v1"
-
 	"github.com/goharbor/harbor/src/controller/artifact"
 	"github.com/goharbor/harbor/src/controller/repository"
 	"github.com/goharbor/harbor/src/core/api"
