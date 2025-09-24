@@ -16,7 +16,6 @@ package controllers
 
 import (
 	"fmt"
-	"net/http"
 	"strings"
 
 	"github.com/goharbor/harbor/src/controller/artifact"
@@ -26,15 +25,6 @@ import (
 	"github.com/goharbor/harbor/src/lib/q"
 )
 
-// Helper function to get keys from a map for debugging
-func getKeys(m map[string]interface{}) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	return keys
-}
-
 // FlatpakController handles OCI Flatpak specification endpoints
 type FlatpakController struct {
 	api.BaseController
@@ -42,522 +32,414 @@ type FlatpakController struct {
 
 // FlatpakIndexResponse represents the response structure for Flatpak index endpoints
 type FlatpakIndexResponse struct {
-	Registry string               `json:"Registry"`
-	Results  []FlatpakIndexResult `json:"Results"`
+	Registry string         `json:"Registry"`
+	Results  []FlatpakEntry `json:"Results"`
 }
 
-// FlatpakIndexResult represents a repository result in the index
-type FlatpakIndexResult struct {
-	Name   string             `json:"Name"`
-	Images []FlatpakImageInfo `json:"Images"`
-	Lists  []FlatpakListInfo  `json:"Lists"`
+// FlatpakEntry represents a single Flatpak application entry
+type FlatpakEntry struct {
+	Name   string         `json:"Name"`
+	Images []FlatpakImage `json:"Images"`
 }
 
-// FlatpakImageInfo represents image information in the index
-type FlatpakImageInfo struct {
-	Tags         []string          `json:"Tags,omitempty"`
+// FlatpakImage represents an OCI image within a Flatpak entry
+type FlatpakImage struct {
+	Architecture string            `json:"Architecture"`
 	Digest       string            `json:"Digest"`
+	Labels       map[string]string `json:"Labels"`
 	MediaType    string            `json:"MediaType"`
-	OS           string            `json:"OS,omitempty"`
-	Architecture string            `json:"Architecture,omitempty"`
-	Annotations  map[string]string `json:"Annotations,omitempty"`
-	Labels       map[string]string `json:"Labels,omitempty"`
+	OS           string            `json:"OS"`
+	Tags         []string          `json:"Tags,omitempty"`
 }
 
-// FlatpakListInfo represents manifest list information in the index
-type FlatpakListInfo struct {
-	Tags      []string          `json:"Tags,omitempty"`
-	Digest    string            `json:"Digest"`
-	MediaType string            `json:"MediaType"`
-	Labels    map[string]string `json:"Labels,omitempty"`
+// GetStatic handles the /index/static endpoint
+func (f *FlatpakController) GetStatic() {
+	f.handleIndexRequest()
 }
 
-// Prepare inits the FlatpakController
-func (f *FlatpakController) Prepare() {
-	f.BaseController.Prepare()
-}
-
-// IndexStatic handles the /index/static endpoint
-// Requests are expected to be repeated with exactly the same parameters
-func (f *FlatpakController) IndexStatic() {
-	f.handleIndexRequest(true)
-}
-
-// IndexDynamic handles the /index/dynamic endpoint
-// Requests constructed via user interaction
-func (f *FlatpakController) IndexDynamic() {
-	f.handleIndexRequest(false)
+// GetDynamic handles the /index/dynamic endpoint
+func (f *FlatpakController) GetDynamic() {
+	f.handleIndexRequest()
 }
 
 // handleIndexRequest processes both static and dynamic index requests
-func (f *FlatpakController) handleIndexRequest(isStatic bool) {
+func (f *FlatpakController) handleIndexRequest() {
+	// Get the registry base URL from request
+	registryURL := fmt.Sprintf("%s://%s", f.Ctx.Input.Scheme(), f.Ctx.Input.Host())
+
+	response := FlatpakIndexResponse{
+		Registry: registryURL,
+		Results:  []FlatpakEntry{},
+	}
+
 	// Parse query parameters
-	filters, err := f.parseQueryFilters()
-	if err != nil {
-		f.CustomAbort(http.StatusBadRequest, err.Error())
+	filters := f.parseQueryFilters()
+	log.Infof("Flatpak query filters: %+v", filters)
+
+	// Must have label:org.flatpak.ref:exists parameter
+	if !f.hasRequiredFlatpakFilter(filters) {
+		log.Infof("Missing required label:org.flatpak.ref:exists filter")
+		f.Data["json"] = response
+		f.ServeJSON()
 		return
 	}
 
-	// Get registry URL from request
-	registryURL := f.getRegistryURL()
-
-	// Build response
-	response := FlatpakIndexResponse{
-		Registry: registryURL,
-		Results:  f.queryRepositories(filters),
-	}
-
-	// Set appropriate cache headers
-	if isStatic {
-		// Static requests should be cacheable
-		f.Ctx.Output.Header("Cache-Control", "public, max-age=3600")
-	} else {
-		// Dynamic requests should not be cached
-		f.Ctx.Output.Header("Cache-Control", "no-cache, no-store, must-revalidate")
-		f.Ctx.Output.Header("Pragma", "no-cache")
-		f.Ctx.Output.Header("Expires", "0")
-	}
-
-	f.Ctx.Output.Header("Content-Type", "application/json")
-	f.Ctx.Output.Header("Content-Encoding", "gzip")
-	f.Data["json"] = response
-
-	if err := f.ServeJSON(); err != nil {
-		log.Errorf("Failed to serve JSON response: %v", err)
-		f.CustomAbort(http.StatusInternalServerError, "Internal server error")
-	}
-}
-
-// QueryFilters represents the parsed query parameters
-type QueryFilters struct {
-	Repository   []string
-	Tag          []string
-	OS           []string
-	Architecture []string
-	Annotations  map[string][]string
-	Labels       map[string][]string
-}
-
-// parseQueryFilters extracts and parses query parameters according to the Flatpak OCI spec
-func (f *FlatpakController) parseQueryFilters() (QueryFilters, error) {
-	filters := QueryFilters{
-		Annotations: make(map[string][]string),
-		Labels:      make(map[string][]string),
-	}
-
-	// Debug: log all query parameters
-	log.Infof("Flatpak query parameters: %+v", f.Ctx.Request.URL.Query())
-
-	// Parse standard parameters
-	if repos := f.GetStrings("repository"); len(repos) > 0 {
-		filters.Repository = repos
-	}
-	if tags := f.GetStrings("tag"); len(tags) > 0 {
-		filters.Tag = tags
-	}
-	if oses := f.GetStrings("os"); len(oses) > 0 {
-		filters.OS = oses
-	}
-	if archs := f.GetStrings("architecture"); len(archs) > 0 {
-		filters.Architecture = archs
-	}
-
-	// Parse annotation and label parameters
-	for key, values := range f.Ctx.Request.URL.Query() {
-		if strings.HasPrefix(key, "annotation:") {
-			// Following Pulp's approach: annotations are not supported
-			return filters, fmt.Errorf("annotation queries are not supported")
-		} else if strings.HasPrefix(key, "label:") {
-			labelKey := strings.TrimPrefix(key, "label:")
-			log.Infof("Flatpak label filter found: key=%s, values=%v", labelKey, values)
-			filters.Labels[labelKey] = values
-		}
-	}
-
-	log.Infof("Flatpak parsed filters: %+v", filters)
-
-	return filters, nil
-}
-
-// getRegistryURL constructs the registry URL from the request
-func (f *FlatpakController) getRegistryURL() string {
-	scheme := "https"
-	if f.Ctx.Request.TLS == nil {
-		scheme = "http"
-	}
-
-	host := f.Ctx.Request.Host
-	if host == "" {
-		host = f.Ctx.Request.Header.Get("X-Forwarded-Host")
-		if host == "" {
-			host = "localhost"
-		}
-	}
-
-	return scheme + "://" + host
-}
-
-// queryRepositories performs the actual repository query based on filters
-func (f *FlatpakController) queryRepositories(filters QueryFilters) []FlatpakIndexResult {
-	log.Infof("Querying repositories with filters: %+v", filters)
-
-	// Check if request is looking for org.flatpak.ref labels
-	hasFlatpakLabel := false
-	if labelValues, exists := filters.Labels["org.flatpak.ref:exists"]; exists {
-		log.Infof("Flatpak label 'org.flatpak.ref:exists' found with values: %v", labelValues)
-		for _, value := range labelValues {
-			if value == "1" {
-				hasFlatpakLabel = true
-				break
-			}
-		}
-	} else {
-		log.Infof("Flatpak label 'org.flatpak.ref:exists' not found in filters")
-	}
-
-	// Only return results if looking for Flatpak apps
-	if !hasFlatpakLabel {
-		log.Infof("No Flatpak label filter found, returning empty results")
-		return []FlatpakIndexResult{}
-	}
-
-	log.Infof("Flatpak label filter detected, proceeding with repository query")
-
-	ctx := f.Ctx.Request.Context()
-	var results []FlatpakIndexResult
-
-	// Query repositories from Harbor
-	repoQuery := &q.Query{}
-	if len(filters.Repository) > 0 {
-		// Filter by repository names if specified
-		repoQuery.Keywords = map[string]interface{}{
-			"name": &q.FuzzyMatchValue{Value: strings.Join(filters.Repository, "|")},
-		}
-	}
-
-	repositories, err := repository.Ctl.List(ctx, repoQuery)
+	// Find repositories that might contain Flatpak artifacts
+	repos, err := f.findAllRepositories()
 	if err != nil {
-		log.Errorf("Failed to query repositories: %v", err)
-		return results
+		log.Errorf("Error finding repositories: %v", err)
+		f.Data["json"] = response
+		f.ServeJSON()
+		return
 	}
 
-	log.Infof("Found %d repositories to check", len(repositories))
+	log.Infof("Found %d repositories to check", len(repos))
 
-	// For each repository, query artifacts
-	for _, repo := range repositories {
-		artifactQuery := &q.Query{
-			Keywords: map[string]interface{}{
-				"repository_id": repo.RepositoryID,
-			},
-		}
-
-		// Apply tag filter if specified
-		if len(filters.Tag) > 0 {
-			artifactQuery.Keywords["tags"] = &q.FuzzyMatchValue{Value: strings.Join(filters.Tag, "|")}
-		}
-
-		artifacts, err := artifact.Ctl.List(ctx, artifactQuery, &artifact.Option{
-			WithTag:       true,
-			WithLabel:     true,
-			WithAccessory: true,
-		})
+	// Process each repository for Flatpak artifacts
+	for _, repo := range repos {
+		artifacts, err := f.findFlatpakArtifacts(repo, filters)
 		if err != nil {
-			log.Errorf("Failed to query artifacts for repository %s: %v", repo.Name, err)
+			log.Errorf("Error finding artifacts in repository %s: %v", repo.Name, err)
 			continue
 		}
 
-		log.Infof("Found %d artifacts in repository %s", len(artifacts), repo.Name)
+		log.Infof("Found %d Flatpak artifacts in repository %s", len(artifacts), repo.Name)
 
-		var images []FlatpakImageInfo
-		var lists []FlatpakListInfo
+		// Group artifacts by Flatpak application name
+		appGroups := f.groupArtifactsByApp(artifacts, filters)
 
-		for _, art := range artifacts {
-			// Check if artifact has Flatpak labels
-			if !f.hasFlatpakLabels(art, filters) {
-				continue
+		for appName, appArtifacts := range appGroups {
+			entry := FlatpakEntry{
+				Name:   appName,
+				Images: []FlatpakImage{},
 			}
 
-			// Check OS/Architecture filters
-			if !f.matchesOSArch(art, filters) {
-				continue
+			for _, art := range appArtifacts {
+				images := f.convertArtifactToImages(repo, art, filters)
+				entry.Images = append(entry.Images, images...)
 			}
 
-			// Extract tags
-			var tags []string
-			for _, tag := range art.Tags {
-				tags = append(tags, tag.Name)
+			if len(entry.Images) > 0 {
+				response.Results = append(response.Results, entry)
 			}
-
-			// Build image info
-			imageInfo := FlatpakImageInfo{
-				Tags:         tags,
-				Digest:       art.Digest,
-				MediaType:    art.MediaType,
-				OS:           f.extractOS(art),
-				Architecture: f.extractArchitecture(art),
-				Annotations:  f.extractAnnotations(art),
-				Labels:       f.extractLabels(art),
-			}
-
-			// Determine if it's a manifest list or single image
-			if f.isManifestList(art) {
-				lists = append(lists, FlatpakListInfo{
-					Tags:      tags,
-					Digest:    art.Digest,
-					MediaType: art.MediaType,
-					Labels:    f.extractLabels(art),
-				})
-			} else {
-				images = append(images, imageInfo)
-			}
-		}
-
-		// Only include repositories that have matching artifacts
-		if len(images) > 0 || len(lists) > 0 {
-			results = append(results, FlatpakIndexResult{
-				Name:   repo.Name,
-				Images: images,
-				Lists:  lists,
-			})
 		}
 	}
 
-	return results
+	log.Infof("Returning %d Flatpak entries", len(response.Results))
+	f.Data["json"] = response
+	f.ServeJSON()
 }
 
-// hasFlatpakLabels checks if the artifact has the required Flatpak labels
-func (f *FlatpakController) hasFlatpakLabels(art *artifact.Artifact, filters QueryFilters) bool {
-	log.Infof("Checking artifact %s for Flatpak labels, has %d labels, %d references", art.Digest, len(art.Labels), len(art.References))
-	log.Infof("Artifact type: %s, media type: %s, manifest media type: %s", art.Type, art.MediaType, art.ManifestMediaType)
-	log.Infof("IsImageIndex: %t", art.IsImageIndex())
+// parseQueryFilters extracts and parses query parameters
+func (f *FlatpakController) parseQueryFilters() map[string][]string {
+	filters := make(map[string][]string)
 
-	// Check for org.flatpak.ref in Harbor labels
-	for _, label := range art.Labels {
-		log.Infof("Artifact Harbor label: name=%s", label.Name)
-		if label.Name == "org.flatpak.ref" {
-			log.Infof("Found org.flatpak.ref in Harbor labels for artifact %s", art.Digest)
+	for key, values := range f.Ctx.Input.Query() {
+		// Handle label filters (they come as "label:key:exists")
+		if strings.HasPrefix(key, "label:") && strings.HasSuffix(key, ":exists") {
+			labelKey := strings.TrimSuffix(strings.TrimPrefix(key, "label:"), ":exists")
+			if _, exists := filters["labels"]; !exists {
+				filters["labels"] = []string{}
+			}
+			filters["labels"] = append(filters["labels"], labelKey)
+			log.Infof("Flatpak label filter: %s", labelKey)
+		} else if len(values) > 0 && values[0] != "" {
+			// Handle other filters (architecture, os, tag, etc.)
+			filterValues := strings.Split(values[0], ",")
+			filters[key] = filterValues
+			log.Infof("Flatpak filter: %s=%v", key, filterValues)
+		}
+	}
+
+	return filters
+}
+
+// hasRequiredFlatpakFilter checks if the required org.flatpak.ref:exists filter is present
+func (f *FlatpakController) hasRequiredFlatpakFilter(filters map[string][]string) bool {
+	labels, exists := filters["labels"]
+	if !exists {
+		return false
+	}
+
+	for _, label := range labels {
+		if label == "org.flatpak.ref" {
 			return true
 		}
 	}
 
-	// Check for org.flatpak.ref in OCI image labels (main location for Flatpak metadata)
-	if art.ExtraAttrs != nil {
-		// First try to access as map[string]interface{} (expected structure)
-		if config, ok := art.ExtraAttrs["config"].(map[string]interface{}); ok {
-			if ociLabels, exists := config["labels"].(map[string]interface{}); exists {
-				for key := range ociLabels {
-					log.Infof("Artifact OCI label: key=%s", key)
-					if key == "org.flatpak.ref" {
-						log.Infof("Found org.flatpak.ref in OCI labels for artifact %s", art.Digest)
-						return true
-					}
-				}
-			}
-		} else if configMap, ok := art.ExtraAttrs["config"].(map[string]interface{}); ok {
-			// Handle stored v1.ImageConfig as map (with capital Labels field)
-			if labelsInterface, exists := configMap["Labels"]; exists {
-				// Try both map[string]string and map[string]interface{}
-				if labels, ok := labelsInterface.(map[string]string); ok {
-					for key := range labels {
-						log.Infof("Artifact OCI label: key=%s", key)
-						if key == "org.flatpak.ref" {
-							log.Infof("Found org.flatpak.ref in OCI labels for artifact %s", art.Digest)
-							return true
-						}
-					}
-				} else if labels, ok := labelsInterface.(map[string]interface{}); ok {
-					for key := range labels {
-						log.Infof("Artifact OCI label: key=%s", key)
-						if key == "org.flatpak.ref" {
-							log.Infof("Found org.flatpak.ref in OCI labels for artifact %s", art.Digest)
-							return true
-						}
-					}
-				}
-			}
-		}
-	}
+	return false
+}
 
-	// Check references (architecture-specific manifests) for Flatpak labels
-	ctx := f.Ctx.Request.Context()
+// findAllRepositories gets all repositories
+func (f *FlatpakController) findAllRepositories() ([]*repository.Repository, error) {
+	repoCtl := repository.Ctl
+	query := &q.Query{}
 
-	// First, check existing References if populated
-	for _, ref := range art.References {
-		log.Infof("Checking reference artifact %d for Flatpak labels", ref.ChildID)
+	return repoCtl.List(f.Ctx.Request.Context(), query)
+}
 
-		// Get the referenced artifact with full metadata
-		refArt, err := artifact.Ctl.Get(ctx, ref.ChildID, &artifact.Option{
-			WithLabel:     true,
-			WithAccessory: true,
-		})
-		if err != nil {
-			log.Errorf("Failed to get referenced artifact %d: %v", ref.ChildID, err)
-			continue
-		}
+// findFlatpakArtifacts finds artifacts in a repository that have Flatpak labels
+func (f *FlatpakController) findFlatpakArtifacts(repo *repository.Repository, filters map[string][]string) ([]*artifact.Artifact, error) {
+	artCtl := artifact.Ctl
 
-		if f.checkArtifactForFlatpakLabels(refArt, fmt.Sprintf("reference artifact %d", ref.ChildID)) {
-			return true
-		}
-	}
-
-	// If no References found, manually query for child manifests
-	// This handles cases where IsImageIndex() might be false but child manifests exist
-	log.Infof("Manually querying for child manifests of artifact %s", art.Digest)
-
-	childQuery := &q.Query{
+	// Create query for artifacts in this repository
+	query := &q.Query{
 		Keywords: map[string]interface{}{
-			"ParentID": art.ID,
+			"repository_id": repo.RepositoryID,
 		},
 	}
 
-	childArtifacts, err := artifact.Ctl.List(ctx, childQuery, &artifact.Option{
-		WithLabel:     true,
-		WithAccessory: true,
-	})
+	// Apply tag filter if specified
+	if tags, exists := filters["tag"]; exists && len(tags) > 0 {
+		query.Keywords["tag"] = map[string]interface{}{
+			"$in": tags,
+		}
+	}
+
+	// Get all artifacts in the repository
+	artifacts, err := artCtl.List(f.Ctx.Request.Context(), query, nil)
 	if err != nil {
-		log.Errorf("Failed to query child artifacts for %s: %v", art.Digest, err)
-	} else {
-		log.Infof("Found %d child artifacts for %s", len(childArtifacts), art.Digest)
-		for _, childArt := range childArtifacts {
-			log.Infof("Checking child artifact %s (ID: %d) for Flatpak labels", childArt.Digest, childArt.ID)
-			if f.checkArtifactForFlatpakLabels(childArt, fmt.Sprintf("child artifact %s", childArt.Digest)) {
+		return nil, err
+	}
+
+	var flatpakArtifacts []*artifact.Artifact
+
+	// Filter artifacts that have Flatpak labels
+	for _, art := range artifacts {
+		if f.isFlatpakArtifact(art) {
+			flatpakArtifacts = append(flatpakArtifacts, art)
+		}
+	}
+
+	return flatpakArtifacts, nil
+}
+
+// isFlatpakArtifact checks if an artifact is a Flatpak artifact
+func (f *FlatpakController) isFlatpakArtifact(art *artifact.Artifact) bool {
+	// Check if this artifact or its references have org.flatpak.ref label
+	return f.artifactHasLabel(art, "org.flatpak.ref")
+}
+
+// artifactHasLabel checks if an artifact or its references have a specific label
+func (f *FlatpakController) artifactHasLabel(art *artifact.Artifact, labelKey string) bool {
+	// Check main artifact
+	if f.hasLabel(art, labelKey) {
+		return true
+	}
+
+	// Check references (for image indexes)
+	if len(art.References) > 0 {
+		for _, ref := range art.References {
+			if f.hasLabel(ref.Child, labelKey) {
 				return true
 			}
 		}
 	}
 
-	// Also check in annotations if available
-	if art.ExtraAttrs != nil {
-		if annotations, ok := art.ExtraAttrs["annotations"].(map[string]interface{}); ok {
-			if _, exists := annotations["org.flatpak.ref"]; exists {
-				log.Infof("Found org.flatpak.ref annotation in artifact %s", art.Digest)
-				return true
-			}
-		}
-	}
-
-	log.Infof("No org.flatpak.ref label/annotation found in artifact %s or its references", art.Digest)
 	return false
 }
 
-// checkArtifactForFlatpakLabels checks a single artifact for Flatpak labels in both Harbor and OCI labels
-func (f *FlatpakController) checkArtifactForFlatpakLabels(art *artifact.Artifact, description string) bool {
-	log.Infof("Checking %s (digest: %s) for Flatpak labels, has %d Harbor labels", description, art.Digest, len(art.Labels))
-	log.Infof("%s type: %s, media type: %s, manifest media type: %s", description, art.Type, art.MediaType, art.ManifestMediaType)
-
-	// Check Harbor labels
-	for _, label := range art.Labels {
-		log.Infof("%s Harbor label: name=%s", description, label.Name)
-		if label.Name == "org.flatpak.ref" {
-			log.Infof("Found org.flatpak.ref in Harbor labels for %s", description)
-			return true
-		}
-	}
-
-	// Check OCI labels in config
+// hasLabel checks if a specific artifact has a label in its config or Harbor labels
+func (f *FlatpakController) hasLabel(art *artifact.Artifact, labelKey string) bool {
+	// Check in OCI image config Labels
 	if art.ExtraAttrs != nil {
-		// First try to access as map[string]interface{} (expected structure)
-		if config, ok := art.ExtraAttrs["config"].(map[string]interface{}); ok {
-			if ociLabels, exists := config["labels"].(map[string]interface{}); exists {
-				log.Infof("%s has %d OCI labels (map format)", description, len(ociLabels))
-				for key := range ociLabels {
-					log.Infof("%s OCI label: key=%s", description, key)
-					if key == "org.flatpak.ref" {
-						log.Infof("Found org.flatpak.ref in OCI labels for %s", description)
+		if configData, ok := art.ExtraAttrs["config"].(map[string]interface{}); ok {
+			if labels, exists := configData["Labels"]; exists {
+				// Try both string and interface maps
+				if labelMap, ok := labels.(map[string]string); ok {
+					if _, hasLabel := labelMap[labelKey]; hasLabel {
 						return true
 					}
 				}
-			} else {
-				log.Infof("%s has config but no OCI labels (map format)", description)
-			}
-		} else if configMap, ok := art.ExtraAttrs["config"].(map[string]interface{}); ok {
-			// Handle stored v1.ImageConfig as map (with capital Labels field)
-			log.Infof("%s config keys: %v", description, getKeys(configMap))
-			if labelsInterface, exists := configMap["Labels"]; exists {
-				// Try both map[string]string and map[string]interface{}
-				if labels, ok := labelsInterface.(map[string]string); ok && len(labels) > 0 {
-					log.Infof("%s has %d OCI labels (Config.Labels string format)", description, len(labels))
-					for key := range labels {
-						log.Infof("%s OCI label: key=%s", description, key)
-						if key == "org.flatpak.ref" {
-							log.Infof("Found org.flatpak.ref in OCI labels for %s", description)
-							return true
-						}
+				if labelMap, ok := labels.(map[string]interface{}); ok {
+					if _, hasLabel := labelMap[labelKey]; hasLabel {
+						return true
 					}
-				} else if labels, ok := labelsInterface.(map[string]interface{}); ok && len(labels) > 0 {
-					log.Infof("%s has %d OCI labels (Config.Labels interface format)", description, len(labels))
-					for key := range labels {
-						log.Infof("%s OCI label: key=%s", description, key)
-						if key == "org.flatpak.ref" {
-							log.Infof("Found org.flatpak.ref in OCI labels for %s", description)
-							return true
-						}
-					}
-				} else {
-					log.Infof("%s has Labels field but wrong type or empty: %T", description, labelsInterface)
 				}
-			} else {
-				log.Infof("%s has config map but no Labels field", description)
 			}
-		} else {
-			log.Infof("%s has ExtraAttrs but no recognizable config format", description)
 		}
-	} else {
-		log.Infof("%s has no ExtraAttrs", description)
 	}
 
-	log.Infof("No org.flatpak.ref label found in %s", description)
+	// Check Harbor labels as fallback
+	if art.Labels != nil {
+		for _, label := range art.Labels {
+			if label.Key == labelKey {
+				return true
+			}
+		}
+	}
+
 	return false
 }
 
-// matchesOSArch checks if the artifact matches the requested OS/Architecture filters
-func (f *FlatpakController) matchesOSArch(art *artifact.Artifact, filters QueryFilters) bool {
-	artOS := f.extractOS(art)
-	artArch := f.extractArchitecture(art)
+// groupArtifactsByApp groups artifacts by their Flatpak application name
+func (f *FlatpakController) groupArtifactsByApp(artifacts []*artifact.Artifact, filters map[string][]string) map[string][]*artifact.Artifact {
+	groups := make(map[string][]*artifact.Artifact)
 
-	// Check OS filter
-	if len(filters.OS) > 0 {
-		found := false
-		for _, filterOS := range filters.OS {
-			if artOS == filterOS {
-				found = true
-				break
-			}
+	for _, art := range artifacts {
+		appName := f.extractAppName(art)
+		if appName == "" {
+			continue
 		}
-		if !found {
-			return false
-		}
+
+		groups[appName] = append(groups[appName], art)
 	}
 
-	// Check Architecture filter
-	if len(filters.Architecture) > 0 {
-		found := false
-		for _, filterArch := range filters.Architecture {
-			if artArch == filterArch {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return false
-		}
-	}
-
-	return true
+	return groups
 }
 
-// extractOS extracts the OS from artifact metadata
-func (f *FlatpakController) extractOS(art *artifact.Artifact) string {
+// extractAppName extracts the application name from the org.flatpak.ref label
+func (f *FlatpakController) extractAppName(art *artifact.Artifact) string {
+	flatpakRef := f.getLabel(art, "org.flatpak.ref")
+	if flatpakRef == "" {
+		return ""
+	}
+
+	// Parse Flatpak ref format: app/com.example.App/arch/branch or runtime/name/arch/branch
+	parts := strings.Split(flatpakRef, "/")
+	if len(parts) >= 2 {
+		// For apps, use the app ID (e.g., "com.example.App")
+		// For runtimes, use the runtime name
+		if parts[0] == "app" && len(parts) >= 2 {
+			return parts[1]
+		}
+		if parts[0] == "runtime" && len(parts) >= 2 {
+			return parts[1]
+		}
+	}
+
+	return ""
+}
+
+// convertArtifactToImages converts an artifact to Flatpak images
+func (f *FlatpakController) convertArtifactToImages(repo *repository.Repository, art *artifact.Artifact, filters map[string][]string) []FlatpakImage {
+	var images []FlatpakImage
+
+	// Handle image index - process references
+	if art.ManifestMediaType == "application/vnd.oci.image.index.v1+json" && len(art.References) > 0 {
+		for _, ref := range art.References {
+			if image := f.convertSingleArtifactToImage(repo, ref.Child, filters); image != nil {
+				images = append(images, *image)
+			}
+		}
+	} else {
+		// Handle single image
+		if image := f.convertSingleArtifactToImage(repo, art, filters); image != nil {
+			images = append(images, *image)
+		}
+	}
+
+	return images
+}
+
+// convertSingleArtifactToImage converts a single artifact to a Flatpak image
+func (f *FlatpakController) convertSingleArtifactToImage(repo *repository.Repository, art *artifact.Artifact, filters map[string][]string) *FlatpakImage {
+	// Get architecture and OS from artifact
+	arch := f.getArchitecture(art)
+	os := f.getOS(art)
+
+	// Apply architecture filter
+	if archFilters, exists := filters["architecture"]; exists && len(archFilters) > 0 {
+		if !f.stringInSlice(arch, archFilters) {
+			return nil
+		}
+	}
+
+	// Apply OS filter
+	if osFilters, exists := filters["os"]; exists && len(osFilters) > 0 {
+		if !f.stringInSlice(os, osFilters) {
+			return nil
+		}
+	}
+
+	// Get all labels from the artifact
+	labels := f.getAllLabels(art)
+
+	// Get tags for this artifact
+	tags := f.getArtifactTags(art)
+
+	image := &FlatpakImage{
+		Architecture: arch,
+		Digest:       art.Digest,
+		Labels:       labels,
+		MediaType:    art.ManifestMediaType,
+		OS:           os,
+		Tags:         tags,
+	}
+
+	return image
+}
+
+// getLabel retrieves a specific label from an artifact
+func (f *FlatpakController) getLabel(art *artifact.Artifact, key string) string {
+	// Check in OCI image config Labels
 	if art.ExtraAttrs != nil {
-		if os, exists := art.ExtraAttrs["os"].(string); exists {
-			return os
+		if configData, ok := art.ExtraAttrs["config"].(map[string]interface{}); ok {
+			if labels, exists := configData["Labels"]; exists {
+				if labelMap, ok := labels.(map[string]string); ok {
+					if value, exists := labelMap[key]; exists {
+						return value
+					}
+				}
+				if labelMap, ok := labels.(map[string]interface{}); ok {
+					if value, exists := labelMap[key]; exists {
+						if strValue, ok := value.(string); ok {
+							return strValue
+						}
+					}
+				}
+			}
 		}
 	}
-	return "linux" // default
+
+	// Check Harbor labels as fallback
+	if art.Labels != nil {
+		for _, label := range art.Labels {
+			if label.Key == key {
+				return label.Value
+			}
+		}
+	}
+
+	return ""
 }
 
-// extractArchitecture extracts the architecture from artifact metadata
-func (f *FlatpakController) extractArchitecture(art *artifact.Artifact) string {
+// getAllLabels retrieves all labels from an artifact
+func (f *FlatpakController) getAllLabels(art *artifact.Artifact) map[string]string {
+	labels := make(map[string]string)
+
+	// Get from OCI image config Labels
+	if art.ExtraAttrs != nil {
+		if configData, ok := art.ExtraAttrs["config"].(map[string]interface{}); ok {
+			if configLabels, exists := configData["Labels"]; exists {
+				if labelMap, ok := configLabels.(map[string]string); ok {
+					for k, v := range labelMap {
+						labels[k] = v
+					}
+				}
+				if labelMap, ok := configLabels.(map[string]interface{}); ok {
+					for k, v := range labelMap {
+						if strValue, ok := v.(string); ok {
+							labels[k] = strValue
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Add Harbor labels
+	if art.Labels != nil {
+		for _, label := range art.Labels {
+			labels[label.Key] = label.Value
+		}
+	}
+
+	return labels
+}
+
+// getArchitecture retrieves the architecture from an artifact
+func (f *FlatpakController) getArchitecture(art *artifact.Artifact) string {
 	if art.ExtraAttrs != nil {
 		if arch, exists := art.ExtraAttrs["architecture"].(string); exists {
 			return arch
@@ -566,65 +448,33 @@ func (f *FlatpakController) extractArchitecture(art *artifact.Artifact) string {
 	return "amd64" // default
 }
 
-// extractAnnotations extracts annotations from artifact metadata
-func (f *FlatpakController) extractAnnotations(art *artifact.Artifact) map[string]string {
-	annotations := make(map[string]string)
+// getOS retrieves the OS from an artifact
+func (f *FlatpakController) getOS(art *artifact.Artifact) string {
 	if art.ExtraAttrs != nil {
-		if annots, ok := art.ExtraAttrs["annotations"].(map[string]interface{}); ok {
-			for key, value := range annots {
-				if strValue, ok := value.(string); ok {
-					annotations[key] = strValue
-				}
-			}
+		if os, exists := art.ExtraAttrs["os"].(string); exists {
+			return os
 		}
 	}
-	return annotations
+	return "linux" // default
 }
 
-// extractLabels extracts labels from artifact Harbor labels and metadata
-func (f *FlatpakController) extractLabels(art *artifact.Artifact) map[string]string {
-	labels := make(map[string]string)
-
-	// Add Harbor labels (use Name as both key and indicate presence)
-	for _, label := range art.Labels {
-		labels[label.Name] = "true"
-	}
-
-	// Also check for OCI labels in config
-	if art.ExtraAttrs != nil {
-		// First try to access as map[string]interface{} (expected structure)
-		if config, ok := art.ExtraAttrs["config"].(map[string]interface{}); ok {
-			if ociLabels, exists := config["labels"].(map[string]interface{}); exists {
-				for key, value := range ociLabels {
-					if strValue, ok := value.(string); ok {
-						labels[key] = strValue
-					}
-				}
-			}
-		} else if configMap, ok := art.ExtraAttrs["config"].(map[string]interface{}); ok {
-			// Handle stored v1.ImageConfig as map (with capital Labels field)
-			if labelsInterface, exists := configMap["Labels"]; exists {
-				// Try both map[string]string and map[string]interface{}
-				if ociLabels, ok := labelsInterface.(map[string]string); ok {
-					for key, value := range ociLabels {
-						labels[key] = value
-					}
-				} else if ociLabels, ok := labelsInterface.(map[string]interface{}); ok {
-					for key, value := range ociLabels {
-						if strValue, ok := value.(string); ok {
-							labels[key] = strValue
-						}
-					}
-				}
-			}
+// getArtifactTags gets the tags associated with an artifact
+func (f *FlatpakController) getArtifactTags(art *artifact.Artifact) []string {
+	var tags []string
+	if art.Tags != nil {
+		for _, tag := range art.Tags {
+			tags = append(tags, tag.Name)
 		}
 	}
-
-	return labels
+	return tags
 }
 
-// isManifestList determines if the artifact is a manifest list
-func (f *FlatpakController) isManifestList(art *artifact.Artifact) bool {
-	return art.MediaType == "application/vnd.oci.image.index.v1+json" ||
-		art.MediaType == "application/vnd.docker.distribution.manifest.list.v2+json"
+// stringInSlice checks if a string is in a slice of strings
+func (f *FlatpakController) stringInSlice(str string, slice []string) bool {
+	for _, item := range slice {
+		if item == str {
+			return true
+		}
+	}
+	return false
 }
