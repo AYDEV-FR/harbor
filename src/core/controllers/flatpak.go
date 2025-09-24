@@ -19,6 +19,8 @@ import (
 	"net/http"
 	"strings"
 
+	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+
 	"github.com/goharbor/harbor/src/controller/artifact"
 	"github.com/goharbor/harbor/src/controller/repository"
 	"github.com/goharbor/harbor/src/core/api"
@@ -333,9 +335,21 @@ func (f *FlatpakController) hasFlatpakLabels(art *artifact.Artifact, filters Que
 
 	// Check for org.flatpak.ref in OCI image labels (main location for Flatpak metadata)
 	if art.ExtraAttrs != nil {
+		// First try to access as map[string]interface{} (expected structure)
 		if config, ok := art.ExtraAttrs["config"].(map[string]interface{}); ok {
 			if ociLabels, exists := config["labels"].(map[string]interface{}); exists {
 				for key := range ociLabels {
+					log.Infof("Artifact OCI label: key=%s", key)
+					if key == "org.flatpak.ref" {
+						log.Infof("Found org.flatpak.ref in OCI labels for artifact %s", art.Digest)
+						return true
+					}
+				}
+			}
+		} else if imageConfig, ok := art.ExtraAttrs["config"].(v1.ImageConfig); ok {
+			// Handle v1.ImageConfig structure directly
+			if imageConfig.Labels != nil {
+				for key := range imageConfig.Labels {
 					log.Infof("Artifact OCI label: key=%s", key)
 					if key == "org.flatpak.ref" {
 						log.Infof("Found org.flatpak.ref in OCI labels for artifact %s", art.Digest)
@@ -424,9 +438,10 @@ func (f *FlatpakController) checkArtifactForFlatpakLabels(art *artifact.Artifact
 
 	// Check OCI labels in config
 	if art.ExtraAttrs != nil {
+		// First try to access as map[string]interface{} (expected structure)
 		if config, ok := art.ExtraAttrs["config"].(map[string]interface{}); ok {
 			if ociLabels, exists := config["labels"].(map[string]interface{}); exists {
-				log.Infof("%s has %d OCI labels", description, len(ociLabels))
+				log.Infof("%s has %d OCI labels (map format)", description, len(ociLabels))
 				for key := range ociLabels {
 					log.Infof("%s OCI label: key=%s", description, key)
 					if key == "org.flatpak.ref" {
@@ -435,10 +450,24 @@ func (f *FlatpakController) checkArtifactForFlatpakLabels(art *artifact.Artifact
 					}
 				}
 			} else {
-				log.Infof("%s has config but no OCI labels", description)
+				log.Infof("%s has config but no OCI labels (map format)", description)
+			}
+		} else if imageConfig, ok := art.ExtraAttrs["config"].(v1.ImageConfig); ok {
+			// Handle v1.ImageConfig structure directly
+			if imageConfig.Labels != nil && len(imageConfig.Labels) > 0 {
+				log.Infof("%s has %d OCI labels (ImageConfig format)", description, len(imageConfig.Labels))
+				for key := range imageConfig.Labels {
+					log.Infof("%s OCI label: key=%s", description, key)
+					if key == "org.flatpak.ref" {
+						log.Infof("Found org.flatpak.ref in OCI labels for %s", description)
+						return true
+					}
+				}
+			} else {
+				log.Infof("%s has ImageConfig but no labels", description)
 			}
 		} else {
-			log.Infof("%s has ExtraAttrs but no config", description)
+			log.Infof("%s has ExtraAttrs but no recognizable config format", description)
 		}
 	} else {
 		log.Infof("%s has no ExtraAttrs", description)
@@ -487,10 +516,8 @@ func (f *FlatpakController) matchesOSArch(art *artifact.Artifact, filters QueryF
 // extractOS extracts the OS from artifact metadata
 func (f *FlatpakController) extractOS(art *artifact.Artifact) string {
 	if art.ExtraAttrs != nil {
-		if config, ok := art.ExtraAttrs["config"].(map[string]interface{}); ok {
-			if os, exists := config["os"].(string); exists {
-				return os
-			}
+		if os, exists := art.ExtraAttrs["os"].(string); exists {
+			return os
 		}
 	}
 	return "linux" // default
@@ -499,10 +526,8 @@ func (f *FlatpakController) extractOS(art *artifact.Artifact) string {
 // extractArchitecture extracts the architecture from artifact metadata
 func (f *FlatpakController) extractArchitecture(art *artifact.Artifact) string {
 	if art.ExtraAttrs != nil {
-		if config, ok := art.ExtraAttrs["config"].(map[string]interface{}); ok {
-			if arch, exists := config["architecture"].(string); exists {
-				return arch
-			}
+		if arch, exists := art.ExtraAttrs["architecture"].(string); exists {
+			return arch
 		}
 	}
 	return "amd64" // default
@@ -534,12 +559,20 @@ func (f *FlatpakController) extractLabels(art *artifact.Artifact) map[string]str
 
 	// Also check for OCI labels in config
 	if art.ExtraAttrs != nil {
+		// First try to access as map[string]interface{} (expected structure)
 		if config, ok := art.ExtraAttrs["config"].(map[string]interface{}); ok {
 			if ociLabels, exists := config["labels"].(map[string]interface{}); exists {
 				for key, value := range ociLabels {
 					if strValue, ok := value.(string); ok {
 						labels[key] = strValue
 					}
+				}
+			}
+		} else if imageConfig, ok := art.ExtraAttrs["config"].(v1.ImageConfig); ok {
+			// Handle v1.ImageConfig structure directly
+			if imageConfig.Labels != nil {
+				for key, value := range imageConfig.Labels {
+					labels[key] = value
 				}
 			}
 		}
