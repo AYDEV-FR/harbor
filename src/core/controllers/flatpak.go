@@ -23,6 +23,7 @@ import (
 	"github.com/goharbor/harbor/src/core/api"
 	"github.com/goharbor/harbor/src/lib/log"
 	"github.com/goharbor/harbor/src/lib/q"
+	"github.com/goharbor/harbor/src/pkg/repository/model"
 )
 
 // FlatpakController handles OCI Flatpak specification endpoints
@@ -134,7 +135,10 @@ func (f *FlatpakController) handleIndexRequest() {
 func (f *FlatpakController) parseQueryFilters() map[string][]string {
 	filters := make(map[string][]string)
 
-	for key, values := range f.Ctx.Input.Query() {
+	// Get all query parameters
+	for key := range f.Ctx.Request.URL.Query() {
+		values := f.Ctx.Input.Query(key)
+
 		// Handle label filters (they come as "label:key:exists")
 		if strings.HasPrefix(key, "label:") && strings.HasSuffix(key, ":exists") {
 			labelKey := strings.TrimSuffix(strings.TrimPrefix(key, "label:"), ":exists")
@@ -143,9 +147,9 @@ func (f *FlatpakController) parseQueryFilters() map[string][]string {
 			}
 			filters["labels"] = append(filters["labels"], labelKey)
 			log.Infof("Flatpak label filter: %s", labelKey)
-		} else if len(values) > 0 && values[0] != "" {
+		} else if values != "" {
 			// Handle other filters (architecture, os, tag, etc.)
-			filterValues := strings.Split(values[0], ",")
+			filterValues := strings.Split(values, ",")
 			filters[key] = filterValues
 			log.Infof("Flatpak filter: %s=%v", key, filterValues)
 		}
@@ -171,7 +175,7 @@ func (f *FlatpakController) hasRequiredFlatpakFilter(filters map[string][]string
 }
 
 // findAllRepositories gets all repositories
-func (f *FlatpakController) findAllRepositories() ([]*repository.Repository, error) {
+func (f *FlatpakController) findAllRepositories() ([]*model.RepoRecord, error) {
 	repoCtl := repository.Ctl
 	query := &q.Query{}
 
@@ -179,7 +183,7 @@ func (f *FlatpakController) findAllRepositories() ([]*repository.Repository, err
 }
 
 // findFlatpakArtifacts finds artifacts in a repository that have Flatpak labels
-func (f *FlatpakController) findFlatpakArtifacts(repo *repository.Repository, filters map[string][]string) ([]*artifact.Artifact, error) {
+func (f *FlatpakController) findFlatpakArtifacts(repo *model.RepoRecord, filters map[string][]string) ([]*artifact.Artifact, error) {
 	artCtl := artifact.Ctl
 
 	// Create query for artifacts in this repository
@@ -227,10 +231,17 @@ func (f *FlatpakController) artifactHasLabel(art *artifact.Artifact, labelKey st
 		return true
 	}
 
-	// Check references (for image indexes)
+	// Check references (for image indexes) - need to fetch child artifacts separately
 	if len(art.References) > 0 {
+		artCtl := artifact.Ctl
 		for _, ref := range art.References {
-			if f.hasLabel(ref.Child, labelKey) {
+			// Get the child artifact by its ID
+			childArt, err := artCtl.Get(f.Ctx.Request.Context(), ref.ChildID, nil)
+			if err != nil {
+				log.Errorf("Error getting child artifact %d: %v", ref.ChildID, err)
+				continue
+			}
+			if f.hasLabel(childArt, labelKey) {
 				return true
 			}
 		}
@@ -263,7 +274,7 @@ func (f *FlatpakController) hasLabel(art *artifact.Artifact, labelKey string) bo
 	// Check Harbor labels as fallback
 	if art.Labels != nil {
 		for _, label := range art.Labels {
-			if label.Key == labelKey {
+			if label.Name == labelKey {
 				return true
 			}
 		}
@@ -312,13 +323,20 @@ func (f *FlatpakController) extractAppName(art *artifact.Artifact) string {
 }
 
 // convertArtifactToImages converts an artifact to Flatpak images
-func (f *FlatpakController) convertArtifactToImages(repo *repository.Repository, art *artifact.Artifact, filters map[string][]string) []FlatpakImage {
+func (f *FlatpakController) convertArtifactToImages(repo *model.RepoRecord, art *artifact.Artifact, filters map[string][]string) []FlatpakImage {
 	var images []FlatpakImage
 
 	// Handle image index - process references
 	if art.ManifestMediaType == "application/vnd.oci.image.index.v1+json" && len(art.References) > 0 {
+		artCtl := artifact.Ctl
 		for _, ref := range art.References {
-			if image := f.convertSingleArtifactToImage(repo, ref.Child, filters); image != nil {
+			// Get the child artifact by its ID
+			childArt, err := artCtl.Get(f.Ctx.Request.Context(), ref.ChildID, nil)
+			if err != nil {
+				log.Errorf("Error getting child artifact %d: %v", ref.ChildID, err)
+				continue
+			}
+			if image := f.convertSingleArtifactToImage(repo, childArt, filters); image != nil {
 				images = append(images, *image)
 			}
 		}
@@ -333,7 +351,7 @@ func (f *FlatpakController) convertArtifactToImages(repo *repository.Repository,
 }
 
 // convertSingleArtifactToImage converts a single artifact to a Flatpak image
-func (f *FlatpakController) convertSingleArtifactToImage(repo *repository.Repository, art *artifact.Artifact, filters map[string][]string) *FlatpakImage {
+func (f *FlatpakController) convertSingleArtifactToImage(repo *model.RepoRecord, art *artifact.Artifact, filters map[string][]string) *FlatpakImage {
 	// Get architecture and OS from artifact
 	arch := f.getArchitecture(art)
 	os := f.getOS(art)
@@ -395,8 +413,8 @@ func (f *FlatpakController) getLabel(art *artifact.Artifact, key string) string 
 	// Check Harbor labels as fallback
 	if art.Labels != nil {
 		for _, label := range art.Labels {
-			if label.Key == key {
-				return label.Value
+			if label.Name == key {
+				return label.Description // Use Description as value since there's no Value field
 			}
 		}
 	}
@@ -431,7 +449,7 @@ func (f *FlatpakController) getAllLabels(art *artifact.Artifact) map[string]stri
 	// Add Harbor labels
 	if art.Labels != nil {
 		for _, label := range art.Labels {
-			labels[label.Key] = label.Value
+			labels[label.Name] = label.Description // Use Description as value
 		}
 	}
 
