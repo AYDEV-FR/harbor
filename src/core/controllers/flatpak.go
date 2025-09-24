@@ -26,6 +26,15 @@ import (
 	"github.com/goharbor/harbor/src/lib/q"
 )
 
+// Helper function to get keys from a map for debugging
+func getKeys(m map[string]interface{}) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
 // FlatpakController handles OCI Flatpak specification endpoints
 type FlatpakController struct {
 	api.BaseController
@@ -463,6 +472,7 @@ func (f *FlatpakController) checkArtifactForFlatpakLabels(art *artifact.Artifact
 			}
 		} else if configMap, ok := art.ExtraAttrs["config"].(map[string]interface{}); ok {
 			// Handle stored v1.ImageConfig as map (with capital Labels field)
+			log.Infof("%s config keys: %v", description, getKeys(configMap))
 			if labelsInterface, exists := configMap["Labels"]; exists {
 				// Try both map[string]string and map[string]interface{}
 				if labels, ok := labelsInterface.(map[string]string); ok && len(labels) > 0 {
