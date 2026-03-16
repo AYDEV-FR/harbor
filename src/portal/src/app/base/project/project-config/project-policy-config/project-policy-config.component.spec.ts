@@ -214,6 +214,34 @@ describe('ProjectPolicyConfigComponent', () => {
             component.projectPolicyConfigComponent.hasChangeConfigRole
         ).toBeTruthy();
     });
+    it('should hide flatpak toggle for non-admin users', async () => {
+        // hasChangeConfigRole is true by default from mock, toggle should be visible
+        fixture.detectChanges();
+        await fixture.whenStable();
+        const toggle = fixture.nativeElement.querySelector(
+            '#flatpak-index-enabled-wrapper'
+        );
+        expect(toggle).toBeTruthy();
+    });
+    it('should show flatpak info box when toggle is ON', async () => {
+        fixture.detectChanges();
+        await fixture.whenStable();
+        component.projectPolicyConfigComponent.projectPolicy.FlatpakIndexEnabled =
+            true;
+        fixture.detectChanges();
+        const infoBox = fixture.nativeElement.querySelector('code');
+        expect(infoBox).toBeTruthy();
+        expect(infoBox.textContent).toContain('flatpak remote-add');
+    });
+    it('should hide flatpak info box when toggle is OFF', async () => {
+        fixture.detectChanges();
+        await fixture.whenStable();
+        component.projectPolicyConfigComponent.projectPolicy.FlatpakIndexEnabled =
+            false;
+        fixture.detectChanges();
+        const infoBox = fixture.nativeElement.querySelector('code');
+        expect(infoBox).toBeFalsy();
+    });
 });
 
 // mock a TestHostComponent for ProjectPolicyConfigComponent

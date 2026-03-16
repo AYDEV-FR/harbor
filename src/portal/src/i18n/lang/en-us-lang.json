@@ -278,7 +278,10 @@
         "SBOM": "SBOM generation",
         "AUTOSBOM_TOGGLE": "Automatically generate SBOM on push",
         "AUTOSBOM_POLICY": "Automatically generate SBOM when the images are pushed to the project registry.",
-        "CONTENT_TRUST_POLICY": "Allow only verified images to be deployed."
+        "CONTENT_TRUST_POLICY": "Allow only verified images to be deployed.",
+        "FLATPAK": "Flatpak index",
+        "FLATPAK_TOGGLE": "Enable Flatpak index",
+        "FLATPAK_POLICY": "Expose a Flatpak OCI registry index for this project, allowing Flatpak clients to discover and install applications."
     },
     "MEMBER": {
         "NEW_MEMBER": "New Member",

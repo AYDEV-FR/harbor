@@ -181,6 +181,10 @@ export class ProjectDefaultService extends ProjectService {
                             projectPolicy.ProxyCacheLocalOnNotFound
                                 ? 'true'
                                 : 'false',
+                        flatpak_index_enabled:
+                            projectPolicy.FlatpakIndexEnabled
+                                ? 'true'
+                                : 'false',
                     },
                     cve_allowlist: projectAllowlist,
                 },

@@ -266,6 +266,33 @@
                 {{ 'PROJECT_CONFIG.AUTOSBOM_POLICY' | translate }}
             </clr-control-helper>
         </clr-checkbox-container>
+        <clr-checkbox-container>
+            <label>{{ 'PROJECT_CONFIG.FLATPAK' | translate }}</label>
+            <clr-checkbox-wrapper id="flatpak-index-enabled-wrapper">
+                <input
+                    type="checkbox"
+                    clrCheckbox
+                    [(ngModel)]="projectPolicy.FlatpakIndexEnabled"
+                    [disabled]="!hasChangeConfigRole"
+                    name="flatpak-index-enabled" />
+                <label>{{
+                    'PROJECT_CONFIG.FLATPAK_TOGGLE' | translate
+                }}</label>
+            </clr-checkbox-wrapper>
+            <clr-control-helper class="config-subtext">
+                {{ 'PROJECT_CONFIG.FLATPAK_POLICY' | translate }}
+            </clr-control-helper>
+        </clr-checkbox-container>
+        <div
+            *ngIf="projectPolicy.FlatpakIndexEnabled"
+            class="clr-form-control mt-0">
+            <label class="clr-control-label"></label>
+            <div class="clr-control-container">
+                <div class="config-subtext">
+                    <code>flatpak remote-add {{ projectName }} oci+{{ registryUrl }}/{{ projectName }}</code>
+                </div>
+            </div>
+        </div>
         <div
             *ngIf="systemInfo"
             class="clr-form-control"

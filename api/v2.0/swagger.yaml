@@ -6217,6 +6217,112 @@ paths:
         '500':
           $ref: '#/responses/500'
 
+  '/{project_name}/index/static':
+    get:
+      summary: Flatpak registry index (cached)
+      description: >
+        Returns the Flatpak OCI registry index for the given project.
+        Only available when the project has flatpak_index_enabled=true.
+        Responses may be cached by the client.
+      operationId: getFlatpakIndexStatic
+      tags:
+        - flatpak
+      parameters:
+        - $ref: '#/parameters/requestId'
+        - name: project_name
+          description: The name of the project
+          in: path
+          required: true
+          type: string
+        - name: architecture
+          description: Filter results by CPU architecture
+          in: query
+          type: array
+          items:
+            type: string
+          collectionFormat: multi
+        - name: tag
+          description: Filter results by tag name
+          in: query
+          type: array
+          items:
+            type: string
+          collectionFormat: multi
+        - name: label
+          description: Filter results by label (key=value)
+          in: query
+          type: array
+          items:
+            type: string
+          collectionFormat: multi
+        - name: annotation
+          description: Filter results by annotation (key=value)
+          in: query
+          type: array
+          items:
+            type: string
+          collectionFormat: multi
+      responses:
+        '200':
+          description: Flatpak index response
+          schema:
+            $ref: '#/definitions/FlatpakIndex'
+        '404':
+          description: Project not found or Flatpak index not enabled
+
+  '/{project_name}/index/dynamic':
+    get:
+      summary: Flatpak registry index (uncached)
+      description: >
+        Returns the Flatpak OCI registry index for the given project.
+        Only available when the project has flatpak_index_enabled=true.
+        Responses are never cached.
+      operationId: getFlatpakIndexDynamic
+      tags:
+        - flatpak
+      parameters:
+        - $ref: '#/parameters/requestId'
+        - name: project_name
+          description: The name of the project
+          in: path
+          required: true
+          type: string
+        - name: architecture
+          description: Filter results by CPU architecture
+          in: query
+          type: array
+          items:
+            type: string
+          collectionFormat: multi
+        - name: tag
+          description: Filter results by tag name
+          in: query
+          type: array
+          items:
+            type: string
+          collectionFormat: multi
+        - name: label
+          description: Filter results by label (key=value)
+          in: query
+          type: array
+          items:
+            type: string
+          collectionFormat: multi
+        - name: annotation
+          description: Filter results by annotation (key=value)
+          in: query
+          type: array
+          items:
+            type: string
+          collectionFormat: multi
+      responses:
+        '200':
+          description: Flatpak index response
+          schema:
+            $ref: '#/definitions/FlatpakIndex'
+        '404':
+          description: Project not found or Flatpak index not enabled
+
 parameters:
   query:
     name: q
@@ -7340,6 +7446,39 @@ definitions:
         type: string
         description: 'Whether to serve images from local cache when they are removed from the upstream registry. The valid values are "true", "false".'
         x-nullable: true
+      flatpak_index_enabled:
+        type: string
+        description: 'Whether Flatpak OCI registry index is enabled for this project. The valid values are "true", "false".'
+        x-nullable: true
+  FlatpakIndex:
+    type: object
+    properties:
+      Registry:
+        type: string
+        description: The registry URL
+      Results:
+        type: array
+        items:
+          $ref: '#/definitions/FlatpakIndexResult'
+  FlatpakIndexResult:
+    type: object
+    properties:
+      Name:
+        type: string
+      Tag:
+        type: string
+      Digest:
+        type: string
+      Download-Size:
+        type: integer
+        format: int64
+      Installed-Size:
+        type: integer
+        format: int64
+      Labels:
+        type: object
+        additionalProperties:
+          type: string
   ProjectSummary:
     type: object
     properties:

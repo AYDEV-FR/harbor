@@ -157,6 +157,15 @@ func (p *Project) AutoSBOMGen() bool {
 	return isTrue(auto)
 }
 
+// FlatpakIndexEnabled ...
+func (p *Project) FlatpakIndexEnabled() bool {
+	enabled, exist := p.GetMetadata(ProMetaFlatpakIndexEnabled)
+	if !exist {
+		return false
+	}
+	return isTrue(enabled)
+}
+
 // ProxyCacheSpeed ...
 func (p *Project) ProxyCacheSpeed() int32 {
 	speed, exist := p.GetMetadata(ProMetaProxySpeed)

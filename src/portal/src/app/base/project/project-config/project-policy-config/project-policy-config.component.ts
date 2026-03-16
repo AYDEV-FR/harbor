@@ -60,6 +60,7 @@ export class ProjectPolicy {
     ProxySpeedKb?: number | null;
     MaxUpstreamConn?: number | null;
     ProxyCacheLocalOnNotFound?: boolean;
+    FlatpakIndexEnabled: boolean;
 
     constructor() {
         this.Public = false;
@@ -74,6 +75,7 @@ export class ProjectPolicy {
         this.ProxySpeedKb = -1;
         this.MaxUpstreamConn = -1;
         this.ProxyCacheLocalOnNotFound = false;
+        this.FlatpakIndexEnabled = false;
     }
 
     initByProject(pro: Project) {
@@ -97,6 +99,8 @@ export class ProjectPolicy {
             : -1;
         this.ProxyCacheLocalOnNotFound =
             pro.metadata.proxy_cache_local_on_not_found === 'true';
+        this.FlatpakIndexEnabled =
+            pro.metadata.flatpak_index_enabled === 'true';
     }
 }
 const PAGE_SIZE: number = 100;
@@ -160,6 +164,7 @@ export class ProjectPolicyConfigComponent implements OnInit {
     bandwidthError: string | null = null;
     maxUpstreamConnError: string | null = null;
     registries: Registry[] = [];
+    registryUrl: string = '';
     supportedRegistryTypeQueryString: string =
         'type={docker-hub harbor azure-acr aws-ecr google-gcr quay docker-registry github-ghcr jfrog-artifactory}';
 
@@ -185,6 +190,13 @@ export class ProjectPolicyConfigComponent implements OnInit {
         this.systemInfoService.getSystemInfo().subscribe(
             systemInfo => {
                 this.systemInfo = systemInfo;
+                if (systemInfo && systemInfo.registry_url) {
+                    // registry_url may be just a host or a full URL
+                    const url = systemInfo.registry_url;
+                    this.registryUrl = url.includes('://') ? url : `https://${url}`;
+                } else {
+                    this.registryUrl = window.location.origin;
+                }
                 setTimeout(() => {
                     this.dateSystemInput.nativeElement.parentNode.setAttribute(
                         'hidden',

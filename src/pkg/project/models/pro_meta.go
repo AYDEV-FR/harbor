@@ -27,4 +27,5 @@ const (
 	ProMetaProxySpeed                = "proxy_speed_kb"
 	ProMetaMaxUpstreamConn           = "max_upstream_conn"
 	ProMetaProxyCacheLocalOnNotFound = "proxy_cache_local_on_not_found"
+	ProMetaFlatpakIndexEnabled       = "flatpak_index_enabled"
 )

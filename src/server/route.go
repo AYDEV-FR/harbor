@@ -58,6 +58,11 @@ func registerRoutes() {
 
 	web.Router("/service/token", &token.Handler{})
 
+	// Flatpak OCI registry index endpoints
+	flatpakHandler := handler.NewFlatpakIndexHandler()
+	router.NewRoute().Method(http.MethodGet).Path("/:splat/index/static").HandlerFunc(flatpakHandler.ServeStatic)
+	router.NewRoute().Method(http.MethodGet).Path("/:splat/index/dynamic").HandlerFunc(flatpakHandler.ServeDynamic)
+
 	// Error pages
 	web.ErrorController(&controllers.ErrorController{})
 }

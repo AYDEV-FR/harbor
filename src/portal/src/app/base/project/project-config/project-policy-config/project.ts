@@ -38,6 +38,7 @@ export class Project {
         proxy_speed_kb?: number | null;
         max_upstream_conn?: number | null;
         proxy_cache_local_on_not_found?: string | boolean;
+        flatpak_index_enabled?: string | boolean;
     };
     cve_allowlist?: object;
     constructor() {
